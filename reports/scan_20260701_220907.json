@@ -1,0 +1,19 @@
+{
+    "target": "http://172.17.0.1:8080/vulnerabilities/fi/?page=include.php",
+    "timestamp": "2026-07-01T22:09:07.430943",
+    "scan_status": "Completed",
+    "vulnerabilities": [],
+    "scan_type": "AUTOMATIC",
+    "payloads_tested": {
+        "command_injection": 16,
+        "file_inclusion": 11,
+        "total_payloads": 27
+    },
+    "summary": {
+        "total_vulnerabilities": 0,
+        "critical_count": 0,
+        "high_count": 0,
+        "command_injection_found": 0,
+        "file_inclusion_found": 0
+    }
+}
