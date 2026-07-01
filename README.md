@@ -21,3 +21,4 @@ cat > requirements.txt << 'ENDOFFILE'
 requests==2.31.0
 reportlab==4.0.4
 urllib3==2.0.4
+# web-vuln-scanner
