@@ -10,18 +10,50 @@
 
 ---
 
+## 📚 Documentation
+
+| Guide | Purpose |
+|-------|---------|
+| **[🚀 QUICK_START.md](QUICK_START.md)** | Get running in 2 minutes (3 setup methods) |
+| **[🛠️ INSTALLATION_GUIDE.md](INSTALLATION_GUIDE.md)** | Complete setup with virtual env, Docker, troubleshooting |
+| **[📖 README.md](README.md)** | Full documentation (you are here) |
+
+---
+
 ## ⚡ Quick Start (2 minutes)
 
+### Choose Your Setup Method:
+
+**Option 1: Automated Setup (Recommended)**
 ```bash
-# Step 1: Install dependencies
-pip3 install -r requirements.txt
-
-# Step 2: Run scanner
-python3 simple_main.py "http://example.com/page?param=value"
-
-# Step 3: Check results
-cat reports/scan_*.json
+git clone https://github.com/karthi05-kk/web-vuln-scanner.git
+cd web-vuln-scanner
+bash SETUP.sh          # Linux/macOS
+# OR
+SETUP.bat             # Windows
+source venv/bin/activate
+python3 simple_main.py "http://example.com/page?param=value" --pdf
 ```
+
+**Option 2: Docker (No Installation Required)**
+```bash
+git clone https://github.com/karthi05-kk/web-vuln-scanner.git
+cd web-vuln-scanner
+docker build -t vuln-scanner .
+docker run vuln-scanner "http://example.com/page?param=value" --pdf
+```
+
+**Option 3: Manual Setup**
+```bash
+git clone https://github.com/karthi05-kk/web-vuln-scanner.git
+cd web-vuln-scanner
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+python3 simple_main.py "http://example.com/page?param=value"
+```
+
+👉 **For complete setup instructions, see [QUICK_START.md](QUICK_START.md) or [INSTALLATION_GUIDE.md](INSTALLATION_GUIDE.md)**
 
 ---
 
@@ -34,6 +66,8 @@ cat reports/scan_*.json
 - ✅ **Vulnerability Detection** - Auto-analyzes responses
 - ✅ **Report Generation** - JSON & PDF reports auto-generated
 - ✅ **Simple CLI** - One command to scan everything
+- ✅ **Multiple Setup Options** - Virtual Env, Docker, Manual
+- ✅ **Cross-Platform** - Works on Linux, macOS, Windows
 
 ---
 
@@ -44,29 +78,70 @@ cat reports/scan_*.json
 - **Linux, macOS, or Windows**
 - Internet connection for web requests
 
+Optional:
+- **Docker** (if using Docker setup method)
+- **Virtual Environment** (recommended for isolation)
+
 ---
 
 ## 🛠️ Installation
 
-### Linux/macOS
+### Recommended: Use Setup Scripts
+
+**Linux/macOS:**
 ```bash
 git clone https://github.com/karthi05-kk/web-vuln-scanner.git
 cd web-vuln-scanner
-pip3 install -r requirements.txt
+bash SETUP.sh
 ```
 
-### Windows
+**Windows:**
 ```bash
 git clone https://github.com/karthi05-kk/web-vuln-scanner.git
 cd web-vuln-scanner
+SETUP.bat
+```
+
+### Alternative: Manual Setup
+
+**Linux/macOS:**
+```bash
+git clone https://github.com/karthi05-kk/web-vuln-scanner.git
+cd web-vuln-scanner
+python3 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
+**Windows:**
+```bash
+git clone https://github.com/karthi05-kk/web-vuln-scanner.git
+cd web-vuln-scanner
+python -m venv venv
+venv\Scripts\activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### Docker Setup
+
+```bash
+git clone https://github.com/karthi05-kk/web-vuln-scanner.git
+cd web-vuln-scanner
+docker build -t vuln-scanner .
+docker run vuln-scanner "http://target.com/page?param=value" --pdf
+```
+
 ### Verify Installation
+
 ```bash
 python3 simple_main.py -h
 ```
+
 If you see help text, you're ready to scan!
+
+👉 **For troubleshooting installation errors, see [INSTALLATION_GUIDE.md](INSTALLATION_GUIDE.md#-troubleshooting-installation-issues)**
 
 ---
 
@@ -86,7 +161,7 @@ python3 simple_main.py "http://target.com/page?param=value" --pdf
 
 **Set custom timeout (for slow servers)**
 ```bash
-python3 simple_main.py "http://target.com/page?param=value" --timeout 20
+python3 simple_main.py "http://target.com/page?param=value" --timeout 30
 ```
 
 **Get help**
@@ -96,7 +171,7 @@ python3 simple_main.py -h
 
 ### 🎯 Real-World Examples
 
-**Test Local Vulnerable Application**
+**Test Local Vulnerable Application (DVWA)**
 ```bash
 python3 simple_main.py "http://localhost/DVWA/vulnerabilities/fi/?page=include.php"
 ```
@@ -109,6 +184,11 @@ python3 simple_main.py "http://target.com/download.php?file=test"
 **Test Command Injection Vulnerability**
 ```bash
 python3 simple_main.py "http://target.com/cmd.php?command=test"
+```
+
+**Test Multiple Parameters**
+```bash
+python3 simple_main.py "http://target.com/page?id=1&file=index.php&cmd=ls"
 ```
 
 ---
@@ -168,6 +248,21 @@ Includes:
 - Vulnerability details table
 - Recommendations and remediation steps
 - Professional formatting
+
+### Check Results
+```bash
+# View JSON report
+cat reports/scan_*.json
+
+# View PDF report (macOS)
+open reports/vulnerability_report_*.pdf
+
+# View PDF report (Linux)
+xdg-open reports/vulnerability_report_*.pdf
+
+# View PDF report (Windows)
+start reports/vulnerability_report_*.pdf
+```
 
 ---
 
@@ -252,6 +347,8 @@ chmod 755 reports
 pip3 install --upgrade -r requirements.txt
 ```
 
+👉 **For comprehensive troubleshooting, see [INSTALLATION_GUIDE.md](INSTALLATION_GUIDE.md#-troubleshooting-installation-issues)**
+
 ### Permission Denied
 **Problem**: Script won't run
 **Solution**: Make script executable
@@ -284,6 +381,29 @@ chmod +x simple_main.py
 - [WebGoat](https://github.com/WebGoat/WebGoat) - OWASP WebGoat
 - [bWAPP](http://www.itsecgames.com/) - buggy web application
 - [Juice Shop](https://github.com/juice-shop/juice-shop) - OWASP Juice Shop
+
+---
+
+## 📁 Project Structure
+
+```
+web-vuln-scanner/
+├── simple_main.py              Entry point (RUN THIS!)
+├── auto_scanner.py             Core scanning logic
+├── pdf_report_generator.py      PDF report generation
+├── requirements.txt            Python dependencies
+├── Dockerfile                  Container setup
+├── docker-compose.yml          Docker Compose config
+├── SETUP.sh                    Linux/macOS auto-setup
+├── SETUP.bat                   Windows auto-setup
+├── README.md                   Full documentation
+├── QUICK_START.md              2-minute quick guide
+├── INSTALLATION_GUIDE.md       Complete setup guide
+├── .gitignore                  Git ignore rules
+└── reports/                    Output folder (auto-created)
+    ├── scan_20260701_103000.json
+    └── vulnerability_report_20260701_103000.pdf
+```
 
 ---
 
@@ -336,12 +456,15 @@ Unauthorized access to computer systems is illegal under the Computer Fraud and 
 
 ---
 
-## 🔗 Links
+## 🔗 Quick Links
 
-- 📖 [GitHub Repository](https://github.com/karthi05-kk/web-vuln-scanner)
+- 📖 [Quick Start Guide](QUICK_START.md) - Get running in 2 minutes
+- 🛠️ [Installation Guide](INSTALLATION_GUIDE.md) - Complete setup with troubleshooting
 - 🐛 [Report Issues](https://github.com/karthi05-kk/web-vuln-scanner/issues)
 - 💬 [Discussions](https://github.com/karthi05-kk/web-vuln-scanner/discussions)
 - 📋 [Contributing Guide](CONTRIBUTING.md)
+- 🐳 [Docker Hub](https://hub.docker.com/) - Deploy with Docker
+- ⭐ [GitHub Repository](https://github.com/karthi05-kk/web-vuln-scanner)
 
 ---
 
@@ -357,5 +480,8 @@ Thank you for using this tool!
 
 **Remember**: With great power comes great responsibility. 🔐
 
+---
+
 **Last Updated**: 2026-07-01  
-**Version**: 1.0.0
+**Version**: 1.0.1  
+**Status**: Active Development
