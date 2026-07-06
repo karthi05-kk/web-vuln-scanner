@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 from urllib.parse import parse_qsl
 
-from auto_scanner_fixed import AutoVulnerabilityScanner
+from auto_scanner import AutoVulnerabilityScanner
 from pdf_report_generator import PDFReportGenerator
 
 
@@ -14,6 +14,19 @@ def parse_post_data(raw: str) -> dict:
     if not raw:
         return {}
     return dict(parse_qsl(raw, keep_blank_values=True))
+
+
+def parse_cookies(raw: str) -> dict:
+    """Turns 'PHPSESSID=abc123; security=low' into {'PHPSESSID': 'abc123', 'security': 'low'}."""
+    if not raw:
+        return {}
+    cookies = {}
+    for part in raw.split(';'):
+        part = part.strip()
+        if '=' in part:
+            key, _, value = part.partition('=')
+            cookies[key.strip()] = value.strip()
+    return cookies
 
 
 def main():
@@ -36,12 +49,16 @@ EXAMPLES:
     parser.add_argument('--timeout', type=int, default=10, help='Timeout in seconds')
     parser.add_argument('--post-data', type=str, default='',
                          help='POST body params to fuzz, e.g. "ip=127.0.0.1&Submit=Submit"')
+    parser.add_argument('--cookie', type=str, default='',
+                         help='Session cookies for authenticated targets, '
+                              'e.g. "PHPSESSID=abc123; security=low"')
     args = parser.parse_args()
 
     scanner = AutoVulnerabilityScanner(
         args.url,
         timeout=args.timeout,
         post_data=parse_post_data(args.post_data),
+        cookies=parse_cookies(args.cookie),
     )
     results = scanner.run_automatic_scan()
 
