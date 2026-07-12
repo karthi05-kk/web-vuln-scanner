@@ -2,63 +2,82 @@
 import argparse
 import json
 import os
+import sys
 from datetime import datetime
-from urllib.parse import parse_qsl
-
 from auto_scanner import AutoVulnerabilityScanner
 from pdf_report_generator import PDFReportGenerator
 
 
-def parse_post_data(raw: str) -> dict:
-    """Turns 'ip=127.0.0.1&Submit=Submit' into {'ip': '127.0.0.1', 'Submit': 'Submit'}."""
-    if not raw:
-        return {}
-    return dict(parse_qsl(raw, keep_blank_values=True))
+AUTH_WARNING = """
+======================================================================
+⚠️  AUTHORIZATION REQUIRED
+======================================================================
+This tool actively sends command injection and file inclusion payloads
+to the target. That is intrusion, not passive scanning, and running it
+against a system you don't own or don't have explicit written
+permission to test is illegal (e.g. under the CFAA in the US, the
+Computer Misuse Act in the UK, and equivalent laws elsewhere) -
+regardless of intent or whether anything is found.
+
+Only proceed if ALL of the following are true:
+  - You own this target, OR
+  - You have explicit written permission to test it (e.g. a signed
+    pentest engagement or scope document), OR
+  - It is an in-scope asset in a bug bounty program you're enrolled in
+======================================================================
+"""
 
 
-def parse_cookies(raw: str) -> dict:
-    """Turns 'PHPSESSID=abc123; security=low' into {'PHPSESSID': 'abc123', 'security': 'low'}."""
-    if not raw:
-        return {}
-    cookies = {}
-    for part in raw.split(';'):
-        part = part.strip()
-        if '=' in part:
-            key, _, value = part.partition('=')
-            cookies[key.strip()] = value.strip()
-    return cookies
+def confirm_authorization(skip_prompt: bool) -> bool:
+    """Refuses to proceed unless the operator explicitly confirms
+    authorization. --i-have-authorization skips the interactive prompt
+    for legitimate repeated/scripted use (e.g. re-running against your
+    own lab, or CI against a test environment you control)."""
+    if skip_prompt:
+        return True
+    print(AUTH_WARNING)
+    answer = input("Do you have explicit authorization to test this target? [y/N]: ").strip().lower()
+    return answer in ("y", "yes")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='🔐 AUTOMATIC WEB VULNERABILITY SCANNER (fixed)',
+        description='🔐 AUTOMATIC WEB VULNERABILITY SCANNER',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 EXAMPLES:
-  python3 simple_main_fixed.py "http://example.com/page?param=value"
-  python3 simple_main_fixed.py "http://example.com/page?param=value" --pdf
+  python3 simple_main.py "http://example.com/page?param=value"
+  python3 simple_main.py "http://example.com/page?param=value" --json
+  python3 simple_main.py "http://example.com/page?param=value" --pdf
 
-  # For POST-driven forms (e.g. DVWA command injection page):
-  python3 simple_main_fixed.py "http://localhost/DVWA/vulnerabilities/exec/" \\
-      --post-data "ip=127.0.0.1&Submit=Submit"
+  # DVWA-style target behind a login (auto-login is on by default):
+  python3 simple_main.py "http://10.0.0.5/dvwa/vulnerabilities/exec/" --pdf
+  python3 simple_main.py "http://10.0.0.5/dvwa/vulnerabilities/exec/" --pdf --user admin --pass password
+
+  # Target that doesn't need login at all - skip the login attempt:
+  python3 simple_main.py "http://example.com/page?id=1" --no-login --pdf
 """
     )
-    parser.add_argument('url', help='Target URL (with or without query parameters)')
+    parser.add_argument('url', help='Target URL with parameters')
     parser.add_argument('--json', action='store_true', help='Export to JSON')
     parser.add_argument('--pdf', action='store_true', help='Export to PDF')
     parser.add_argument('--timeout', type=int, default=10, help='Timeout in seconds')
-    parser.add_argument('--post-data', type=str, default='',
-                         help='POST body params to fuzz, e.g. "ip=127.0.0.1&Submit=Submit"')
-    parser.add_argument('--cookie', type=str, default='',
-                         help='Session cookies for authenticated targets, '
-                              'e.g. "PHPSESSID=abc123; security=low"')
+    parser.add_argument('--user', default='admin', help='Username for auto-login if a login form is detected (default: admin)')
+    parser.add_argument('--pass', dest='password', default='password',
+                         help='Password for auto-login if a login form is detected (default: password)')
+    parser.add_argument('--no-login', action='store_true', help='Skip auto-login detection entirely')
+    parser.add_argument('--i-have-authorization', action='store_true',
+                         help='Skip the interactive authorization prompt (for repeated/scripted use '
+                              'against a target you are already authorized to test)')
     args = parser.parse_args()
 
+    if not confirm_authorization(args.i_have_authorization):
+        print("\n[!] Authorization not confirmed. Exiting without scanning.")
+        sys.exit(1)
+
     scanner = AutoVulnerabilityScanner(
-        args.url,
-        timeout=args.timeout,
-        post_data=parse_post_data(args.post_data),
-        cookies=parse_cookies(args.cookie),
+        args.url, timeout=args.timeout,
+        username=args.user, password=args.password, auto_login=not args.no_login,
     )
     results = scanner.run_automatic_scan()
 
