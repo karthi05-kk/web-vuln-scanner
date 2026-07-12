@@ -4,19 +4,19 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 
-**Just enter a URL. Everything else is automatic.**
+**Just enter a URL. Everything else is automatic — including login.**
 
-🚀 Automatically detects **Command Injection** & **File Inclusion** vulnerabilities in web applications with zero configuration.
+🚀 Automatically detects **Command Injection** & **File Inclusion** vulnerabilities in web applications, including login-gated targets like DVWA, with zero manual session setup.
 
 ---
 
-## 🆕 What's New in v1.1.0
+## 🆕 What's New in v1.2.0
 
-- **Time-based blind Command Injection detection** — payloads like `; sleep 6` are now measured against response latency, catching injection that doesn't echo output back
-- **POST body fuzzing** via `--post-data` — for apps like DVWA whose vulnerable fields are submitted as a form, not a URL query string
-- **Authenticated scanning** via `--cookie` — pass a session cookie so gated pages (login-walled apps) actually get tested instead of silently scanning the login page
-- **Login-redirect warning** — the scanner now tells you explicitly when a request landed on what looks like a login page, instead of just reporting 0 vulnerabilities
-- Removed 8 dead Command Injection payloads (`whoami`-only) that could never match any detection indicator regardless of whether the target was vulnerable
+- **Auto-login** — the scanner detects a login form on the target (or a redirect to one), scrapes any CSRF token automatically, and logs in with `--user`/`--pass` (defaults to `admin`/`password`) before scanning. No more manually copying session cookies out of DevTools.
+- **HTML form auto-discovery** — parameters are now found by parsing the page's actual `<form>` fields (GET or POST), not just the URL's query string. This is what lets the scanner find DVWA's Command Injection field (`ip`), which is submitted via POST and never appears in the URL at all.
+- **Baseline diffing** — each parameter is tested once with a harmless value first. A payload is only flagged as vulnerable if its indicator is *new* compared to that baseline, cutting down false positives from generic words (like "total") that already appear on the normal page.
+- **Authorization gate** — the scanner now prints a legal warning and requires an explicit `y` confirmation (or `--i-have-authorization` to skip the prompt for your own repeated/scripted use) before sending a single payload.
+- Fixed a bug where `extract_parameters()` only ever checked the URL's query string, so scanning a URL with no `?param=value` in it (e.g. DVWA's exec page) always reported `[!] No parameters found`, even when a real vulnerability was one page-load away.
 
 ---
 
@@ -65,17 +65,19 @@ python3 simple_main.py "http://example.com/page?param=value"
 
 👉 **For complete setup instructions, see [QUICK_START.md](QUICK_START.md) or [INSTALLATION_GUIDE.md](INSTALLATION_GUIDE.md)**
 
+The first time you run a scan, you'll be asked to confirm you're authorized to test the target — see [Authorization Gate](#-authorization-gate) below.
+
 ---
 
 ## ✨ Key Features
 
-- ✅ **FULLY AUTOMATIC** - No configuration needed
-- ✅ **17 Command Injection Payloads** - 12 indicator-based + 5 time-based (blind) detection
+- ✅ **FULLY AUTOMATIC** - Enter a URL; login, parameter discovery, and payload testing all happen without manual setup
+- ✅ **Auto-Login** - Detects login forms, scrapes CSRF tokens, and authenticates automatically
+- ✅ **GET + POST Parameter Discovery** - Parses page HTML for `<form>` fields, not just the URL query string
+- ✅ **16 Command Injection Payloads** - Indicator-based detection
 - ✅ **11 File Inclusion Payloads** - Auto-tested
-- ✅ **GET and POST Support** - Auto-detects URL parameters; fuzz POST forms with `--post-data`
-- ✅ **Authenticated Scanning** - Pass session cookies with `--cookie` for login-gated targets
-- ✅ **Login-Wall Detection** - Warns you when requests are landing on a login page instead of the real target
-- ✅ **Vulnerability Detection** - Auto-analyzes responses and response timing
+- ✅ **Baseline Diffing** - Each finding is checked against a clean baseline response to reduce false positives
+- ✅ **Authorization Gate** - Requires explicit confirmation before any payload is sent
 - ✅ **Report Generation** - JSON & PDF reports auto-generated
 - ✅ **Simple CLI** - One command to scan everything
 - ✅ **Multiple Setup Options** - Virtual Env, Docker, Manual
@@ -157,6 +159,25 @@ If you see help text, you're ready to scan!
 
 ---
 
+## 🔓 Authorization Gate
+
+Before any payload is sent, the scanner prints a legal warning and asks:
+
+```
+Do you have explicit authorization to test this target? [y/N]:
+```
+
+Anything other than `y`/`yes` exits immediately without sending a single request. This exists because the scanner performs active intrusion (command injection and path traversal attempts), not passive scanning, and running it against a target you're not authorized to test is illegal regardless of intent.
+
+For your own repeated or scripted use (e.g. re-running against your own lab), skip the prompt with:
+```bash
+python3 simple_main.py "http://your-target" --pdf --i-have-authorization
+```
+
+This is a deliberate speed bump, not a technical enforcement mechanism — see the [Legal Disclaimer](#️-legal-disclaimer) below for what you're actually agreeing to by using this tool.
+
+---
+
 ## 📖 Usage
 
 ### Basic Commands
@@ -176,19 +197,24 @@ python3 simple_main.py "http://target.com/page?param=value" --pdf
 python3 simple_main.py "http://target.com/page?param=value" --timeout 30
 ```
 
-**Fuzz a POST form instead of URL parameters**
+**Scan a login-gated target (e.g. DVWA)**
 ```bash
-python3 simple_main.py "http://target.com/vulnerabilities/exec/" \
-    --post-data "ip=127.0.0.1&Submit=Submit"
+python3 simple_main.py "http://target.com/vulnerabilities/exec/" --pdf
+```
+No manual cookie required — the scanner detects the login form and authenticates with the default credentials (`admin`/`password`). If your target uses different credentials:
+```bash
+python3 simple_main.py "http://target.com/vulnerabilities/exec/" --pdf --user myuser --pass mypass
 ```
 
-**Scan an authenticated (login-gated) target**
+**Skip auto-login entirely** (for targets that don't require it)
 ```bash
-python3 simple_main.py "http://target.com/vulnerabilities/exec/" \
-    --post-data "ip=127.0.0.1&Submit=Submit" \
-    --cookie "PHPSESSID=your_session_id; security=low"
+python3 simple_main.py "http://target.com/page?id=1" --pdf --no-login
 ```
-Get `PHPSESSID` (and any other required cookie, e.g. DVWA's `security` level cookie) by logging into the target in your browser, then copying the values from DevTools → Application → Cookies. Without a valid session, gated pages redirect to their login form and the scanner tests that instead of the real page — it will now warn you explicitly when this happens.
+
+**Skip the authorization prompt for repeated/scripted runs against a target you're already authorized to test**
+```bash
+python3 simple_main.py "http://target.com/page?id=1" --pdf --i-have-authorization
+```
 
 **Get help**
 ```bash
@@ -199,16 +225,14 @@ python3 simple_main.py -h
 
 **Test Local Vulnerable Application (DVWA — File Inclusion, GET-based)**
 ```bash
-python3 simple_main.py "http://localhost/DVWA/vulnerabilities/fi/?page=include.php" \
-    --cookie "PHPSESSID=your_session_id; security=low"
+python3 simple_main.py "http://localhost/DVWA/vulnerabilities/fi/?page=include.php" --pdf
 ```
 
 **Test Local Vulnerable Application (DVWA — Command Injection, POST-based)**
 ```bash
-python3 simple_main.py "http://localhost/DVWA/vulnerabilities/exec/" \
-    --post-data "ip=127.0.0.1&Submit=Submit" \
-    --cookie "PHPSESSID=your_session_id; security=low"
+python3 simple_main.py "http://localhost/DVWA/vulnerabilities/exec/" --pdf
 ```
+The `ip` field here is a POST form field with no query string in the URL at all — the scanner finds it by parsing the page HTML, then logs in automatically before testing it.
 
 **Test File Inclusion Vulnerability**
 ```bash
@@ -229,18 +253,13 @@ python3 simple_main.py "http://target.com/page?id=1&file=index.php&cmd=ls"
 
 ## 📊 What Gets Tested?
 
-### Command Injection Detection (17 Payloads: 12 indicator-based + 5 time-based)
+### Command Injection Detection (16 Payloads)
 
-**Indicator-based** (needs the target to echo command output back in the response):
 - **Separators**: `;` `|` `||` `&&`
 - **Execution Methods**: Backticks `` ` `` and `$()`
-- **Commands used**: `id`, `ls -la`, `cat /etc/passwd`
+- **Commands used**: `whoami`, `id`, `ls -la`, `cat /etc/passwd`
 - **Indicators Detected**: `root:x:`, `uid=`, `gid=`, `groups=`, `/bin/bash`, `/bin/sh`, `total`, `drwx`
-
-**Time-based / blind** (works even when the target never shows command output):
-- Payloads run `sleep 6` via each separator (`;`, `|`, backticks, `$()`, `&&`)
-- The scanner records a baseline response time first, then flags the target as vulnerable if the response is delayed by roughly the sleep duration, or if the request itself times out in a way consistent with the sleep executing
-
+- **False-positive guard**: each indicator is only counted if it's absent from a baseline (non-payload) request to the same parameter
 - **Severity**: CRITICAL
 
 ### File Inclusion Detection (11 Payloads)
@@ -248,8 +267,11 @@ python3 simple_main.py "http://target.com/page?id=1&file=index.php&cmd=ls"
 - **Path Traversal**: `../../../etc/passwd`
 - **Null Bytes**: `%00`
 - **PHP Wrappers**: `php://`, `file://`
-- **Indicators Detected**: `/etc/passwd`, `<?php`, `USER=`, `PATH=`
+- **Indicators Detected**: `root:x:`, `/bin/bash`, `/bin/sh`, `nologin`, `<?php`, `<?=`, `USER=`, `PATH=`, `HOME=`
+- **False-positive guard**: same baseline-diffing as above
 - **Severity**: HIGH
+
+Total: **27 payloads** tested per discovered parameter.
 
 ---
 
@@ -262,35 +284,32 @@ Automatically generated as: `reports/scan_YYYYMMDD_HHMMSS.json`
 **Example output:**
 ```json
 {
-  "target": "http://example.com/page",
+  "target": "http://target.com/vulnerabilities/exec/",
   "scan_status": "Completed",
-  "timestamp": "2026-07-06T01:15:20",
+  "timestamp": "2026-07-12T13:37:11.123456",
+  "scan_type": "AUTOMATIC",
+  "payloads_tested": {
+    "command_injection": 16,
+    "file_inclusion": 11,
+    "total_payloads": 27
+  },
   "summary": {
-    "total_vulnerabilities": 2,
+    "total_vulnerabilities": 1,
     "critical_count": 1,
-    "high_count": 1,
+    "high_count": 0,
     "command_injection_found": 1,
-    "file_inclusion_found": 1
+    "file_inclusion_found": 0
   },
   "vulnerabilities": [
     {
       "type": "Command Injection",
-      "detection": "time-based-blind",
       "severity": "CRITICAL",
+      "url": "http://target.com/vulnerabilities/exec/",
       "parameter": "ip",
       "method": "POST",
-      "payload": "; sleep 6",
+      "payload": "; id",
       "vulnerable": true,
-      "baseline_response_time": 0.31,
-      "observed_response_time": 6.42
-    },
-    {
-      "type": "File Inclusion (LFI)",
-      "severity": "HIGH",
-      "parameter": "page",
-      "payload": "../../../etc/passwd",
-      "vulnerable": true,
-      "evidence": "root:x:0:0..."
+      "status_code": 200
     }
   ]
 }
@@ -327,18 +346,17 @@ start reports/vulnerability_report_*.pdf
 
 ## ⚙️ How It Works
 
-The scanner automates the entire vulnerability detection workflow:
+1. **Authorization Check** - You confirm you're authorized to test the target (or pass `--i-have-authorization`)
+2. **URL Input** - You provide a target URL
+3. **Auto-Login** - The scanner checks whether the target redirects to a login form or shows a password field; if so, it logs in automatically (scraping any CSRF token) using `--user`/`--pass`
+4. **Parameter Discovery** - The scanner extracts GET query parameters from the URL *and* parses the page's actual `<form>` elements for POST/GET fields
+5. **Baseline Request** - Each parameter gets one harmless "control" request first, to know what a normal response looks like
+6. **Payload Testing** - All 27 payloads are tested against each discovered parameter
+7. **Response Analysis** - Responses are checked for indicator strings that are new relative to the baseline
+8. **Report Generation** - Results are compiled into the scan summary
+9. **File Saving** - Results are auto-saved to `reports/` as JSON and/or PDF
 
-1. **URL Input** - You provide a URL, optionally with `--post-data` and/or `--cookie`
-2. **Preflight Check** - Tool checks whether the target redirects to a login page and warns if so
-3. **Parameter Detection** - Tool extracts GET query parameters, and/or uses your supplied POST fields
-4. **Payload Selection** - 28 payloads are auto-selected (17 Command Injection + 11 File Inclusion)
-5. **Vulnerability Testing** - Each payload is auto-tested, with response content and timing both recorded
-6. **Response Analysis** - Responses are analyzed for indicator strings and for timing anomalies vs. baseline
-7. **Report Generation** - Reports are auto-generated
-8. **File Saving** - Results are auto-saved to `reports/` folder
-
-**Total Time**: 1-3 minutes with ONE command (time-based payloads add a few seconds each)
+**Total Time**: 1-2 minutes with ONE command
 
 ---
 
@@ -356,7 +374,6 @@ The scanner automates the entire vulnerability detection workflow:
 **Command Injection Found**
 - The target can execute arbitrary system commands
 - Attacker can run any OS command
-- A `detection: "time-based-blind"` finding means the app doesn't echo output but still executes injected commands — just as serious as an indicator-based match
 - ⚠️ **Very dangerous** - fix immediately
 
 **File Inclusion Found**
@@ -390,12 +407,11 @@ The scanner automates the entire vulnerability detection workflow:
 
 ### Getting 0 vulnerabilities on a target I know is vulnerable
 
-Check the console output for these two signals before assuming the tool is wrong:
+Check the console output for these signals before assuming the tool is wrong:
 
-1. **`[!] No parameters found`** — the URL you scanned has no `?param=value` in it. If the real vulnerable field is a POST form (this is how DVWA's Command Injection page works), use `--post-data` instead.
-2. **`[WARNING] This request appears to have landed on a LOGIN page`** — the target requires authentication and your request is hitting the login form, not the real page. Log in via your browser, grab the session cookie, and pass it with `--cookie`.
-
-If neither warning fires and you still get 0, it's worth manually confirming the injection point with `curl` before assuming the app is safe — heavy input filtering (e.g. DVWA's Medium/High security levels) can legitimately block the default payload set.
+1. **`[!] No parameters found`** — the scanner couldn't find any GET query parameters or `<form>` fields on the page. Confirm the URL is actually the vulnerable page, not a landing/redirect page.
+2. **`[AUTH] Target appears to require login... attempting auto-login`** followed by **`[!] Auto-login did not appear to succeed`** — your credentials are wrong for this target. Pass the correct ones with `--user`/`--pass`.
+3. If neither warning fires and you still get 0, it's worth manually confirming the injection point with `curl` before assuming the app is safe — heavy input filtering (e.g. DVWA's Medium/High security levels) can legitimately block the default payload set.
 
 ### Connection Timeout
 
@@ -404,7 +420,6 @@ If neither warning fires and you still get 0, it's worth manually confirming the
 ```bash
 python3 simple_main.py "http://target.com" --timeout 30
 ```
-Note: time-based Command Injection payloads add their own dynamic timeout on top of `--timeout`, so a single scan legitimately takes longer than earlier versions.
 
 ### Reports Not Generated
 
@@ -417,11 +432,12 @@ chmod 755 reports
 
 ### ModuleNotFoundError
 
-**Problem**: `ModuleNotFoundError: No module named 'requests'`
+**Problem**: `ModuleNotFoundError: No module named 'bs4'` (or `requests`)
 **Solution**: Reinstall dependencies
 ```bash
 pip3 install --upgrade -r requirements.txt
 ```
+Note: this version added `beautifulsoup4` as a dependency for HTML form parsing — make sure you've re-run `pip install -r requirements.txt` after updating.
 
 👉 **For comprehensive troubleshooting, see [INSTALLATION_GUIDE.md](INSTALLATION_GUIDE.md#-troubleshooting-installation-issues)**
 
@@ -437,17 +453,17 @@ chmod +x simple_main.py
 
 ## ℹ️ Limitations & Scope
 
-- **Passive Testing Only** - Does not modify target files or databases
-- **GET and POST** - Scans URL query parameters automatically, and POST body fields when supplied via `--post-data` (headers are still not tested)
-- **Response Analysis** - Relies on response indicators and response timing (may have false positives/negatives)
+- **Active Testing** - Sends real payloads to the target; this is intrusive, not passive, testing
+- **GET and POST** - Discovers both automatically via URL parsing and HTML form parsing (headers and cookies themselves are not fuzzed)
+- **Response Analysis** - Relies on response indicator strings, diffed against a baseline (may still have false positives/negatives)
 - **Rate Limiting** - Does not handle aggressive rate limiting
-- **Authentication** - Supported via `--cookie` for session-gated targets. No login-flow automation — you must log in manually and pass the session cookie
+- **Authentication** - Auto-login works for standard HTML login forms (like DVWA's); it does not handle multi-factor auth, OAuth flows, or JavaScript-rendered login forms
 - **HTTPS Only** - Works with both HTTP and HTTPS
 
 **Not Tested:**
 - SQL Injection, XSS, CSRF (separate tools recommended)
-- Out-of-band (DNS/HTTP callback) blind detection — time-based blind Command Injection is covered, but OOB channels are not implemented
-- Advanced WAF/filter bypass techniques
+- Out-of-band (DNS/HTTP callback) or time-based blind detection
+- Advanced WAF/filter bypass techniques (e.g. DVWA Medium/High security levels)
 
 ---
 
@@ -460,7 +476,7 @@ chmod +x simple_main.py
 - [bWAPP](http://www.itsecgames.com/) - buggy web application
 - [Juice Shop](https://github.com/juice-shop/juice-shop) - OWASP Juice Shop
 
-**Note on DVWA specifically**: its Command Injection page (`vulnerabilities/exec/`) is a POST form and requires a logged-in session with the security level cookie set — see the `--post-data` and `--cookie` examples above.
+**Note on DVWA specifically**: its Command Injection page (`vulnerabilities/exec/`) is a POST form gated behind login — this is exactly the case the auto-login and form-discovery features were built to handle. Run it with default DVWA credentials (`admin`/`password`) and no extra flags needed.
 
 ---
 
@@ -469,7 +485,7 @@ chmod +x simple_main.py
 ```
 web-vuln-scanner/
 ├── simple_main.py              Entry point (RUN THIS!)
-├── auto_scanner.py             Core scanning logic
+├── auto_scanner.py             Core scanning logic (auto-login, discovery, testing)
 ├── pdf_report_generator.py      PDF report generation
 ├── requirements.txt            Python dependencies
 ├── Dockerfile                  Container setup
@@ -504,9 +520,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 - Add XSS detection
 - Add SQL Injection detection
 - Add CSRF detection
-- Improve payload accuracy
-- Better false positive filtering
-- Out-of-band (DNS/HTTP callback) blind detection
+- Time-based / blind Command Injection detection
+- Out-of-band (DNS/HTTP callback) detection
+- Improve payload accuracy for filtered environments (DVWA Medium/High)
 - Add more output formats
 
 ---
@@ -533,7 +549,7 @@ This tool is for **AUTHORIZED SECURITY TESTING ONLY**:
 
 **By using this tool, you agree to use it legally and ethically.**
 
-Unauthorized access to computer systems is illegal under the Computer Fraud and Abuse Act (CFAA) and similar laws worldwide.
+Unauthorized access to computer systems is illegal under the Computer Fraud and Abuse Act (CFAA) and similar laws worldwide. The in-tool authorization prompt (see [Authorization Gate](#-authorization-gate)) is a reminder, not a substitute for actually having permission.
 
 ---
 
@@ -562,6 +578,6 @@ Thank you for using this tool!
 
 ---
 
-**Last Updated**: 2026-07-06
-**Version**: 1.1.0
+**Last Updated**: 2026-07-12
+**Version**: 1.2.0
 **Status**: Active Development
