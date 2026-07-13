@@ -205,6 +205,31 @@ class AutoVulnerabilityScanner:
                     'other_fields': {k: v for k, v in defaults.items() if k != name}
                 })
 
+        # ALSO parse <a href="..."> links with a query string. DVWA's file
+        # inclusion page, for example, shows plain text links like
+        # "?page=include.php" rather than a <form> - if we only looked at
+        # forms, landing on that page via a bare URL (e.g. from dirb
+        # discovery, which finds "/vulnerabilities/fi/" with no query
+        # string attached) would find zero injection points even though
+        # the vulnerable parameter is right there in a link on the page.
+        seen_link_params = set()
+        for a in soup.find_all("a", href=True):
+            link_url = urljoin(url, a["href"])
+            link_parsed = urlparse(link_url)
+            link_qs = parse_qs(link_parsed.query)
+            if not link_qs:
+                continue
+            link_base = urlunparse(link_parsed._replace(query=""))
+            for name in link_qs:
+                key = (link_base, name)
+                if key in seen_link_params:
+                    continue
+                seen_link_params.add(key)
+                points.append({
+                    'name': name, 'method': 'GET', 'action_url': link_base,
+                    'other_fields': {k: v[0] for k, v in link_qs.items() if k != name}
+                })
+
         return points
 
     def _get_csrf_refresh(self, point: Dict) -> Dict[str, str]:
