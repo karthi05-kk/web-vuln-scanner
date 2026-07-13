@@ -81,7 +81,7 @@ EXAMPLES:
     )
     results = scanner.run_automatic_scan()
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     os.makedirs("reports", exist_ok=True)
 
     if args.json or not args.pdf:
