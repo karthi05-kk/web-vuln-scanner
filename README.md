@@ -10,7 +10,12 @@
 
 ---
 
-## 🆕 What's New in v1.2.0
+## 🆕 What's New in v1.3.0
+
+- **`recon_and_scan.sh`** — a new wrapper that discovers a target's live endpoints with `dirb` and then scans each one automatically, so you only need to type the *base* URL instead of every full vulnerable path. See [Recon Mode](#-recon-mode-discover--scan-automatically) below.
+- **Fixed a report filename collision** — when two scans finished within the same second (common when batch-scanning multiple endpoints back to back), the timestamp-based report filename collided and one report silently overwrote another. Report filenames now include microsecond precision to guarantee uniqueness.
+
+## What's New in v1.2.0
 
 - **Auto-login** — the scanner detects a login form on the target (or a redirect to one), scrapes any CSRF token automatically, and logs in with `--user`/`--pass` (defaults to `admin`/`password`) before scanning. No more manually copying session cookies out of DevTools.
 - **HTML form auto-discovery** — parameters are now found by parsing the page's actual `<form>` fields (GET or POST), not just the URL's query string. This is what lets the scanner find DVWA's Command Injection field (`ip`), which is submitted via POST and never appears in the URL at all.
@@ -95,6 +100,7 @@ The first time you run a scan, you'll be asked to confirm you're authorized to t
 Optional:
 - **Docker** (if using Docker setup method)
 - **Virtual Environment** (recommended for isolation)
+- **`dirb`** (only needed for [Recon Mode](#-recon-mode-discover--scan-automatically) — ships by default on Kali; `sudo apt install dirb` otherwise)
 
 ---
 
@@ -175,6 +181,30 @@ python3 simple_main.py "http://your-target" --pdf --i-have-authorization
 ```
 
 This is a deliberate speed bump, not a technical enforcement mechanism — see the [Legal Disclaimer](#️-legal-disclaimer) below for what you're actually agreeing to by using this tool.
+
+---
+
+## 🔎 Recon Mode: Discover & Scan Automatically
+
+Typing out every full vulnerable URL by hand (`.../vulnerabilities/exec/`, `.../vulnerabilities/fi/`, etc.) gets old fast. `recon_and_scan.sh` automates the discovery step too, using `dirb` (pre-installed on Kali) to find a target's live pages, then scanning each one automatically:
+
+```bash
+chmod +x recon_and_scan.sh
+./recon_and_scan.sh http://target.com/dvwa admin password
+```
+
+What it does, in order:
+1. Logs in once via `curl` so `dirb` sees real pages instead of login-redirects
+2. Runs `dirb` against the target using `dvwa_wordlist.txt` — a wordlist of DVWA's actual page names (`exec`, `fi`, `sqli`, etc.), since generic `dirb` wordlists like `common.txt` don't reliably contain these specific names
+3. Lists every live (`CODE:200`) endpoint it found
+4. Asks you to confirm authorization **once** for the whole batch
+5. Runs the full scanner against each discovered endpoint, saving a separate PDF/JSON report per endpoint into `reports/`
+
+**Requires**: `dirb` (`sudo apt install dirb` if it's not already on your system — it ships by default on Kali).
+
+**Limitation**: `dvwa_wordlist.txt` only covers DVWA's known `/vulnerabilities/*` page names. For broader discovery beyond DVWA specifically, you can point `dirb` at a more general wordlist (e.g. `/usr/share/dirb/wordlists/common.txt` on Kali) — expect more noise and false "found" pages, since that wordlist wasn't built for this app's structure.
+
+If you'd rather scan one specific URL directly without discovery, `simple_main.py` still works exactly as described below.
 
 ---
 
@@ -279,7 +309,7 @@ Total: **27 payloads** tested per discovered parameter.
 
 ### JSON Report
 
-Automatically generated as: `reports/scan_YYYYMMDD_HHMMSS.json`
+Automatically generated as: `reports/scan_YYYYMMDD_HHMMSS_ffffff.json`
 
 **Example output:**
 ```json
@@ -317,7 +347,7 @@ Automatically generated as: `reports/scan_YYYYMMDD_HHMMSS.json`
 
 ### PDF Report
 
-Generated as: `reports/vulnerability_report_YYYYMMDD_HHMMSS.pdf`
+Generated as: `reports/vulnerability_report_YYYYMMDD_HHMMSS_ffffff.pdf`
 
 Includes:
 - Title page with target information
@@ -487,6 +517,8 @@ web-vuln-scanner/
 ├── simple_main.py              Entry point (RUN THIS!)
 ├── auto_scanner.py             Core scanning logic (auto-login, discovery, testing)
 ├── pdf_report_generator.py      PDF report generation
+├── recon_and_scan.sh            Optional: dirb-based endpoint discovery + batch scan
+├── dvwa_wordlist.txt            DVWA-specific page names used by recon_and_scan.sh
 ├── requirements.txt            Python dependencies
 ├── Dockerfile                  Container setup
 ├── docker-compose.yml          Docker Compose config
@@ -497,8 +529,9 @@ web-vuln-scanner/
 ├── INSTALLATION_GUIDE.md       Complete setup guide
 ├── .gitignore                  Git ignore rules
 └── reports/                    Output folder (auto-created)
-    ├── scan_20260701_103000.json
-    └── vulnerability_report_20260701_103000.pdf
+    ├── scan_20260701_103000_482913.json
+    ├── vulnerability_report_20260701_103000_482913.pdf
+    └── dirb_scan_20260701_103000.txt          (only when using recon_and_scan.sh)
 ```
 
 ---
@@ -578,6 +611,6 @@ Thank you for using this tool!
 
 ---
 
-**Last Updated**: 2026-07-12
-**Version**: 1.2.0
+**Last Updated**: 2026-07-13
+**Version**: 1.3.0
 **Status**: Active Development
