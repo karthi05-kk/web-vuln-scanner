@@ -19,7 +19,7 @@ class PDFReportGenerator:
             os.makedirs(self.output_path)
 
     def generate_report(self, scan_results: Dict[str, Any], company_name: str = "Security Audit") -> str:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         filename = f"{self.output_path}/vulnerability_report_{timestamp}.pdf"
         doc = SimpleDocTemplate(filename, pagesize=A4)
         elements = []
