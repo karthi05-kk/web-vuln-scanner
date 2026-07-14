@@ -57,8 +57,22 @@ echo "======================================================================"
 echo "STEP 1: Authenticating to $BASE_URL (needed so dirb sees real pages,"
 echo "         not login-redirects, while discovering endpoints)"
 echo "======================================================================"
-curl -s -c "$COOKIE_JAR" -X POST "$BASE_URL/login.php" \
-    -d "username=$DVWA_USER&password=$DVWA_PASS" -o /dev/null || true
+curl -s -c "$COOKIE_JAR" "$BASE_URL/login.php" -o /tmp/dvwa_login_page_$$.html || true
+
+USER_TOKEN=$(python3 -c "
+from bs4 import BeautifulSoup
+try:
+    with open('/tmp/dvwa_login_page_$$.html') as f:
+        soup = BeautifulSoup(f.read(), 'html.parser')
+    tok = soup.find('input', {'name': 'user_token'})
+    print(tok.get('value', '') if tok else '')
+except Exception:
+    print('')
+")
+rm -f /tmp/dvwa_login_page_$$.html
+
+curl -s -c "$COOKIE_JAR" -b "$COOKIE_JAR" -X POST "$BASE_URL/login.php" \
+    -d "username=$DVWA_USER&password=$DVWA_PASS&Login=Login&user_token=$USER_TOKEN" -o /dev/null || true
 
 COOKIE_HEADER=$(python3 -c "
 import http.cookiejar, sys
