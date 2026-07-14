@@ -24,6 +24,20 @@ if [ -z "$1" ]; then
 fi
 
 BASE_URL="${1%/}"          # strip a trailing slash if present, we add it back consistently below
+
+# If the person pasted a link to a specific page (e.g. .../index.php or
+# .../login.php - the URL you'd actually browse to, which is a very natural
+# thing to paste here) strip it back to the site root. dirb needs the root
+# to correctly combine with the wordlist's relative paths like
+# "vulnerabilities/exec/" - with a filename left in the base, every
+# combined path becomes invalid (e.g. ".../index.php/vulnerabilities/exec/",
+# which doesn't exist) and dirb finds nothing.
+if [[ "$BASE_URL" =~ /[^/]+\.[a-zA-Z0-9]+$ ]]; then
+    STRIPPED="${BASE_URL%/*}"
+    echo "[i] Detected a specific page in the URL (${BASE_URL##*/}) - using the site root instead: $STRIPPED"
+    BASE_URL="$STRIPPED"
+fi
+
 DVWA_USER="${2:-admin}"
 DVWA_PASS="${3:-password}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
