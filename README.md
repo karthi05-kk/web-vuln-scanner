@@ -37,6 +37,23 @@
 
 ## ⚡ Quick Start (2 minutes)
 
+### 🔎 Fastest way: auto-discover endpoints and scan (recommended)
+
+No need to type out every vulnerable URL — `dirb` finds them, then the scanner tests each one automatically:
+
+```bash
+git clone https://github.com/karthi05-kk/web-vuln-scanner.git
+cd web-vuln-scanner
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+chmod +x recon_and_scan.sh
+./recon_and_scan.sh http://target.com admin password
+```
+
+Confirm authorization once (`y`), and it discovers live pages under `/vulnerabilities/`, then scans each one and saves a separate PDF/JSON report per endpoint into `reports/`. See [Recon Mode](#-recon-mode-discover--scan-automatically) below for details, requirements, and limitations.
+
+Prefer to scan one specific URL directly instead of discovering endpoints? Use `simple_main.py` — see the setup options below.
+
 ### Choose Your Setup Method:
 
 **Option 1: Automated Setup (Recommended)**
