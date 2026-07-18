@@ -25,6 +25,14 @@ fi
 
 BASE_URL="${1%/}"          # strip a trailing slash if present, we add it back consistently below
 
+# Split into "scheme://host[:port]" and "path" so the filename-stripping
+# logic below only ever looks at the PATH, never the host. Matching against
+# the whole URL was the original bug: "http://google.com" has a dot in the
+# host too, so the old regex treated "google.com" itself as if it were a
+# filename like "index.php" and stripped it off, leaving a broken "http:/".
+SCHEME_HOST=$(printf '%s' "$BASE_URL" | grep -oP '^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]+' || true)
+PATH_PART="${BASE_URL#"$SCHEME_HOST"}"
+
 # If the person pasted a link to a specific page (e.g. .../index.php or
 # .../login.php - the URL you'd actually browse to, which is a very natural
 # thing to paste here) strip it back to the site root. dirb needs the root
@@ -32,10 +40,10 @@ BASE_URL="${1%/}"          # strip a trailing slash if present, we add it back c
 # "vulnerabilities/exec/" - with a filename left in the base, every
 # combined path becomes invalid (e.g. ".../index.php/vulnerabilities/exec/",
 # which doesn't exist) and dirb finds nothing.
-if [[ "$BASE_URL" =~ /[^/]+\.[a-zA-Z0-9]+$ ]]; then
-    STRIPPED="${BASE_URL%/*}"
-    echo "[i] Detected a specific page in the URL (${BASE_URL##*/}) - using the site root instead: $STRIPPED"
-    BASE_URL="$STRIPPED"
+if [[ -n "$PATH_PART" && "$PATH_PART" =~ /[^/]+\.[a-zA-Z0-9]+$ ]]; then
+    STRIPPED_PATH="${PATH_PART%/*}"
+    echo "[i] Detected a specific page in the URL (${PATH_PART##*/}) - using the site root instead: ${SCHEME_HOST}${STRIPPED_PATH}"
+    BASE_URL="${SCHEME_HOST}${STRIPPED_PATH}"
 fi
 
 DVWA_USER="${2:-admin}"
@@ -50,6 +58,53 @@ mkdir -p reports
 
 if [ ! -f "$WORDLIST" ]; then
     echo "[!] Wordlist not found at $WORDLIST - make sure dvwa_wordlist.txt is next to this script."
+    exit 1
+fi
+
+# --- Scope allowlist + authorization gate -----------------------------
+# This runs BEFORE any network traffic (login attempt, dirb). Previously
+# authorization was only confirmed in Step 3, after Steps 1-2 had already
+# hit the target - meaning a typo'd or wrong target (like the google.com
+# mishap) got live requests before anyone was ever asked "should this be
+# scanned at all?". Both checks now happen up front instead.
+HOST_PART=$(printf '%s' "$SCHEME_HOST" | sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##')
+ALLOWLIST_FILE="$SCRIPT_DIR/authorized_targets.txt"
+
+if [ ! -f "$ALLOWLIST_FILE" ]; then
+    cat > "$ALLOWLIST_FILE" <<'EOF'
+# authorized_targets.txt
+# One authorized host per line, exactly as it appears in the URL you pass
+# to recon_and_scan.sh - hostname or hostname:port, e.g.:
+#   172.17.0.1:8080
+#   dvwa-staging.internal.example.com
+# Only add a host here if you have written authorization to test it.
+# Lines starting with # are ignored.
+EOF
+    echo "[!] No authorized_targets.txt found - created an empty template at $ALLOWLIST_FILE"
+    echo "    Add the host(s) you're authorized to test, one per line, then re-run."
+    rm -f "$COOKIE_JAR"
+    exit 1
+fi
+
+if ! grep -vE '^\s*#|^\s*$' "$ALLOWLIST_FILE" | grep -qxF "$HOST_PART"; then
+    echo "[!] '$HOST_PART' is not listed in $ALLOWLIST_FILE."
+    echo "    Refusing to scan a host that isn't explicitly allowlisted."
+    echo "    Add it to $ALLOWLIST_FILE first - but only if you have written"
+    echo "    authorization to test it."
+    rm -f "$COOKIE_JAR"
+    exit 1
+fi
+
+echo "======================================================================"
+echo "AUTHORIZATION CHECK"
+echo "======================================================================"
+echo "Target: $BASE_URL"
+echo "This will send a login attempt, a dirb directory brute-force, and then"
+echo "(after a second confirmation) live command-injection/LFI payloads."
+read -p "Confirm you have explicit written authorization to test this target right now [y/N]: " PRE_AUTH
+if [[ ! "$PRE_AUTH" =~ ^[Yy] ]]; then
+    echo "[!] Authorization not confirmed. Exiting before any scanning began."
+    rm -f "$COOKIE_JAR"
     exit 1
 fi
 
@@ -120,14 +175,8 @@ echo ""
 echo "======================================================================"
 echo "STEP 3: Vulnerability scanning each discovered endpoint"
 echo "======================================================================"
-echo "You'll confirm authorization ONCE for this entire batch of scans."
+echo "Authorization for $BASE_URL was already confirmed above."
 echo ""
-read -p "Do you have explicit authorization to test $BASE_URL? [y/N]: " AUTH
-if [[ ! "$AUTH" =~ ^[Yy] ]]; then
-    echo "[!] Authorization not confirmed. Exiting without scanning."
-    rm -f "$COOKIE_JAR"
-    exit 1
-fi
 
 while IFS= read -r endpoint; do
     [ -z "$endpoint" ] && continue
